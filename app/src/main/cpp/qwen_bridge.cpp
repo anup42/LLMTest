@@ -29,7 +29,6 @@ static bool g_capture_llama_errors = false;
 
 static void ggml_log_to_last_error(enum ggml_log_level level, const char * text, void * /*user_data*/) {
     if (!g_capture_llama_errors || text == nullptr) return;
-    // keep a small tail of recent llama logs to help diagnose failures
     std::string line = text ? std::string(text) : std::string();
     if (!line.empty()) {
         g_llama_log_tail.push_back(line);
@@ -47,10 +46,7 @@ namespace {
 constexpr int32_t kDefaultContext = 4096;
 constexpr int32_t kDefaultBatch = 128;
 
-static const char *kSystemInstruction =
-        "You are a helpful AI assistant.";
-
-static std::string apply_chat_template(const std::string &user_prompt);
+// Removed legacy default system instruction and chat templating.
 
 static std::string jstring_to_utf8(JNIEnv *env, jstring value) {
     if (!value) {
@@ -154,26 +150,12 @@ static bool build_prompt_from_components(const std::string &fallback,
         return true;
     }
     if (!fallback.empty()) {
-        out = apply_chat_template(fallback);
+        // If a fallback prompt was provided, use it as-is
+        out = fallback;
         return true;
     }
     LOGE("No prompt data available for generation");
     return false;
-}
-
-static std::string apply_chat_template(const std::string &user_prompt) {
-    if (user_prompt.find("<|im_start|>") != std::string::npos) {
-        return user_prompt;
-    }
-
-    std::string formatted;
-    formatted.reserve(user_prompt.size() + 128);
-    formatted.append("<|im_start|>system\n");
-    formatted.append(kSystemInstruction);
-    formatted.append("\n<|im_end|>\n<|im_start|>user\n");
-    formatted.append(user_prompt);
-    formatted.append("\n<|im_end|>\n<|im_start|>assistant\n");
-    return formatted;
 }
 
 static void release_locked() {
@@ -648,7 +630,6 @@ Java_com_samsung_llmtest_QwenBridge_nativeRelease(
     std::lock_guard<std::mutex> lock(g_mutex);
     release_locked();
 }
-
 
 
 

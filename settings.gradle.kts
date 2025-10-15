@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "GenUI Craft"
+rootProject.name = "LLM Test"
 include(":app")

@@ -10,14 +10,6 @@ set(LLAMA_INCLUDE_DIR "${LLAMA_VENDOR_DIR}/include")
 set(GGML_INCLUDE_DIR "${LLAMA_VENDOR_DIR}/ggml")
 set(COMMON_INCLUDE_DIR "${LLAMA_VENDOR_DIR}/common")
 
-if (NOT EXISTS "${JNI_LIBS_DIR}/libllama.so")
-    message(FATAL_ERROR "Expected libllama.so in ${JNI_LIBS_DIR}; run scripts/build_llama_snapdragon830.sh (or the matching Snapdragon build script)")
-endif()
-
-if (NOT EXISTS "${JNI_LIBS_DIR}/libggml.so")
-    message(FATAL_ERROR "Expected libggml.so in ${JNI_LIBS_DIR}; run scripts/build_llama_snapdragon830.sh (or the matching Snapdragon build script)")
-endif()
-
 include_directories(
         "${LLAMA_INCLUDE_DIR}"
         "${GGML_INCLUDE_DIR}"
