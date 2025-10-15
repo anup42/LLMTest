@@ -197,6 +197,11 @@ static void release_locked() {
     g_last_error.clear();
 }
 
+static bool progress_logger(float p, void * /*user*/) {
+    LOGI("Model load progress: %.1f%%", p * 100.0f);
+    return true;
+}
+
 static bool decode_one(llama_context *ctx, llama_token tok, llama_pos pos) {
     llama_batch batch = llama_batch_init(1, 0, 1);
     batch.n_tokens = 1;
@@ -455,6 +460,8 @@ Java_com_samsung_llmtest_QwenBridge_nativeInit(
     mparams.use_mlock = false;
     mparams.n_gpu_layers = -1;
     mparams.check_tensors = true; // validate tensor headers/data to avoid segfaults on bad/corrupt GGUF
+    mparams.progress_callback = progress_logger;
+    mparams.progress_callback_user_data = nullptr;
     LOGI("GPU offload support=%d (requested layers=%d)", llama_supports_gpu_offload(), mparams.n_gpu_layers);
 
     // Before loading, perform quick file checks
@@ -475,7 +482,7 @@ Java_com_samsung_llmtest_QwenBridge_nativeInit(
     g_llama_log_tail.clear();
     g_capture_llama_errors = true;
     llama_log_set(ggml_log_to_last_error, nullptr);
-    g_model = llama_load_model_from_file(model_path, mparams);
+    g_model = llama_model_load_from_file(model_path, mparams);
     if (!g_model) {
         LOGE("Failed to load model at %s", model_path);
         if (!g_last_error.empty()) {
@@ -509,7 +516,7 @@ Java_com_samsung_llmtest_QwenBridge_nativeInit(
     cparams.n_threads = threads;
     cparams.n_threads_batch = threads;
 
-    g_ctx = llama_new_context_with_model(g_model, cparams);
+    g_ctx = llama_init_from_model(g_model, cparams);
     if (!g_ctx) {
         LOGE("Failed to create context for %s", model_path);
         g_last_error = "context init failed";
