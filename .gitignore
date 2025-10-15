@@ -1,0 +1,42 @@
+# Gradle
+.gradle/
+/build/
+*/build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# IDE metadata
+.idea/
+*.iml
+*.ipr
+*.iws
+local.properties
+
+# Native build artifacts
+.cxx/
+app/.cxx/
+.externalNativeBuild/
+
+# Android Studio captures
+captures/
+
+# Logs
+*.log
+
+# Distribution artifacts
+*.apk
+*.aab
+*.aar
+
+# Keystore material
+*.jks
+*.keystore
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Project-specific
+llama cpp Code/
+llama.cpp/
+tools/
