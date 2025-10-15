@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <deque>
+#include <sys/stat.h>
 
 #include "llama.h"
 
@@ -20,6 +22,25 @@ static llama_context *g_ctx = nullptr;
 static bool g_backend_initialized = false;
 static std::atomic<int> g_last_generated_tokens{0};
 static std::atomic<double> g_last_decode_ms{0.0};
+static std::string g_last_error;
+static std::deque<std::string> g_llama_log_tail;
+static const size_t kLogTailMax = 32;
+static bool g_capture_llama_errors = false;
+
+static void ggml_log_to_last_error(enum ggml_log_level level, const char * text, void * /*user_data*/) {
+    if (!g_capture_llama_errors || text == nullptr) return;
+    // keep a small tail of recent llama logs to help diagnose failures
+    std::string line = text ? std::string(text) : std::string();
+    if (!line.empty()) {
+        g_llama_log_tail.push_back(line);
+        if (g_llama_log_tail.size() > kLogTailMax) {
+            g_llama_log_tail.pop_front();
+        }
+    }
+    if (level == GGML_LOG_LEVEL_WARN || level == GGML_LOG_LEVEL_ERROR) {
+        g_last_error = line;
+    }
+}
 
 namespace {
 
@@ -28,6 +49,117 @@ constexpr int32_t kDefaultBatch = 128;
 
 static const char *kSystemInstruction =
         "You are a helpful AI assistant.";
+
+static std::string apply_chat_template(const std::string &user_prompt);
+
+static std::string jstring_to_utf8(JNIEnv *env, jstring value) {
+    if (!value) {
+        return {};
+    }
+    const char *chars = env->GetStringUTFChars(value, nullptr);
+    if (!chars) {
+        return {};
+    }
+    std::string result(chars);
+    env->ReleaseStringUTFChars(value, chars);
+    return result;
+}
+
+static std::vector<std::string> jstring_array_to_vector(JNIEnv *env, jobjectArray array) {
+    std::vector<std::string> result;
+    if (!array) {
+        return result;
+    }
+    const jsize length = env->GetArrayLength(array);
+    result.reserve(length);
+    for (jsize i = 0; i < length; ++i) {
+        auto element = static_cast<jstring>(env->GetObjectArrayElement(array, i));
+        if (!element) {
+            result.emplace_back();
+        } else {
+            const char *chars = env->GetStringUTFChars(element, nullptr);
+            if (chars) {
+                result.emplace_back(chars);
+                env->ReleaseStringUTFChars(element, chars);
+            } else {
+                result.emplace_back();
+            }
+            env->DeleteLocalRef(element);
+        }
+    }
+    return result;
+}
+
+static bool apply_model_chat_template(const std::vector<std::string> &roles,
+                                      const std::vector<std::string> &contents,
+                                      std::string &out) {
+    if (!g_model || roles.empty() || roles.size() != contents.size()) {
+        return false;
+    }
+
+    std::vector<llama_chat_message> messages(roles.size());
+    std::vector<std::string> sanitized_roles = roles;
+    std::vector<std::string> sanitized_contents = contents;
+
+    for (size_t i = 0; i < roles.size(); ++i) {
+        messages[i].role = sanitized_roles[i].c_str();
+        messages[i].content = sanitized_contents[i].c_str();
+    }
+
+    size_t estimated = 0;
+    for (const auto &piece : sanitized_contents) {
+        estimated += piece.size();
+    }
+    estimated = std::max<size_t>(estimated * 2 + 256, 1024);
+
+    std::vector<char> buffer(estimated);
+    int32_t formatted = llama_chat_apply_template(
+            nullptr,
+            messages.data(),
+            messages.size(),
+            true,
+            buffer.data(),
+            static_cast<int32_t>(buffer.size()));
+
+    if (formatted < 0) {
+        LOGE("llama_chat_apply_template failed with code %d", formatted);
+        return false;
+    }
+
+    if (static_cast<size_t>(formatted) >= buffer.size()) {
+        buffer.resize(static_cast<size_t>(formatted) + 1);
+        formatted = llama_chat_apply_template(
+                nullptr,
+                messages.data(),
+                messages.size(),
+                true,
+                buffer.data(),
+                static_cast<int32_t>(buffer.size()));
+        if (formatted < 0) {
+            LOGE("llama_chat_apply_template failed on retry with code %d", formatted);
+            return false;
+        }
+    }
+
+    buffer[std::min<size_t>(buffer.size() - 1, static_cast<size_t>(formatted))] = '\0';
+    out.assign(buffer.data(), static_cast<size_t>(formatted));
+    return true;
+}
+
+static bool build_prompt_from_components(const std::string &fallback,
+                                         const std::vector<std::string> &roles,
+                                         const std::vector<std::string> &contents,
+                                         std::string &out) {
+    if (apply_model_chat_template(roles, contents, out)) {
+        return true;
+    }
+    if (!fallback.empty()) {
+        out = apply_chat_template(fallback);
+        return true;
+    }
+    LOGE("No prompt data available for generation");
+    return false;
+}
 
 static std::string apply_chat_template(const std::string &user_prompt) {
     if (user_prompt.find("<|im_start|>") != std::string::npos) {
@@ -62,6 +194,7 @@ static void release_locked() {
     }
     g_last_generated_tokens.store(0);
     g_last_decode_ms.store(0.0);
+    g_last_error.clear();
 }
 
 static bool decode_one(llama_context *ctx, llama_token tok, llama_pos pos) {
@@ -82,7 +215,8 @@ static llama_token greedy_from_logits(llama_context *ctx, const llama_model *mod
     if (!logits || !model) {
         return -1;
     }
-    const int n_vocab = llama_n_vocab(model);
+    const struct llama_vocab * vocab = llama_model_get_vocab(model);
+    const int n_vocab = llama_vocab_n_tokens(vocab);
     if (n_vocab <= 0) {
         return -1;
     }
@@ -100,7 +234,8 @@ static llama_token greedy_from_logits(llama_context *ctx, const llama_model *mod
 
 static bool append_clean_piece(std::string &dst, const llama_model *model, llama_token tok) {
     char tmp[64];
-    int n = llama_token_to_piece(model, tok, tmp, static_cast<int>(sizeof(tmp)), /*special*/ true);
+    const struct llama_vocab * vocab = llama_model_get_vocab(model);
+    int n = llama_token_to_piece(vocab, tok, tmp, static_cast<int>(sizeof(tmp)), /*lstrip*/ 0, /*special*/ true);
     if (n > 0) {
         std::string tag(tmp, n);
         if (tag == "<|im_end|>" || tag == "<|im_start|>" || tag == "<|assistant|>" ||
@@ -110,7 +245,7 @@ static bool append_clean_piece(std::string &dst, const llama_model *model, llama
     }
 
     char buf[256];
-    n = llama_token_to_piece(model, tok, buf, static_cast<int>(sizeof(buf)), /*special*/ false);
+    n = llama_token_to_piece(vocab, tok, buf, static_cast<int>(sizeof(buf)), /*lstrip*/ 0, /*special*/ false);
     if (n >= 0) {
         if (n) dst.append(buf, n);
         return true;
@@ -118,7 +253,7 @@ static bool append_clean_piece(std::string &dst, const llama_model *model, llama
 
     std::string wide;
     wide.resize(static_cast<size_t>(-n));
-    n = llama_token_to_piece(model, tok, wide.data(), static_cast<int>(wide.size()), /*special*/ false);
+    n = llama_token_to_piece(vocab, tok, wide.data(), static_cast<int>(wide.size()), /*lstrip*/ 0, /*special*/ false);
     if (n > 0) dst.append(wide.data(), n);
     return true;
 }
@@ -127,12 +262,13 @@ static std::vector<llama_token> tokenize_prompt(const llama_model *model, const 
     if (!model) {
         return {};
     }
+    const struct llama_vocab * vocab = llama_model_get_vocab(model);
     std::vector<llama_token> tokens(prompt.size() + 16);
-    int32_t count = llama_tokenize(model, prompt.c_str(), static_cast<int32_t>(prompt.size()), tokens.data(),
+    int32_t count = llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), tokens.data(),
                                    static_cast<int32_t>(tokens.size()), /*add_special*/ true, /*parse_special*/ true);
     if (count < 0) {
         tokens.resize(static_cast<size_t>(-count));
-        count = llama_tokenize(model, prompt.c_str(), static_cast<int32_t>(prompt.size()), tokens.data(),
+        count = llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), tokens.data(),
                                static_cast<int32_t>(tokens.size()), true, true);
     }
     if (count < 0) {
@@ -188,7 +324,6 @@ static std::string generate_text(const std::vector<llama_token> &prompt_tokens,
                                  JNIEnv *env = nullptr,
                                  jobject callback = nullptr,
                                  jmethodID on_token = nullptr) {
-    llama_kv_cache_clear(g_ctx);
     g_last_generated_tokens.store(0);
     g_last_decode_ms.store(0.0);
 
@@ -204,8 +339,8 @@ static std::string generate_text(const std::vector<llama_token> &prompt_tokens,
         g_last_generated_tokens.store(0);
         return "[error] Model is not available.";
     }
-
-    const llama_token eos = llama_token_eos(model);
+    const struct llama_vocab * vocab = llama_model_get_vocab(model);
+    const llama_token eos = llama_vocab_eos(vocab);
     std::string output;
     output.reserve(static_cast<size_t>(std::max(128, max_tokens * 4)));
 
@@ -315,18 +450,58 @@ Java_com_samsung_llmtest_QwenBridge_nativeInit(
     }
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.use_mmap = true;
+    // Force non-mmap path for stability on some devices
+    mparams.use_mmap = false;
     mparams.use_mlock = false;
     mparams.n_gpu_layers = -1;
+    mparams.check_tensors = true; // validate tensor headers/data to avoid segfaults on bad/corrupt GGUF
     LOGI("GPU offload support=%d (requested layers=%d)", llama_supports_gpu_offload(), mparams.n_gpu_layers);
 
+    // Before loading, perform quick file checks
+    {
+        struct stat st{};
+        if (stat(model_path, &st) == 0) {
+            LOGI("Model file size: %lld bytes", (long long) st.st_size);
+            if (st.st_size <= 0) {
+                g_last_error = "model file is empty";
+            }
+        } else {
+            LOGE("stat() failed on model path: %s", model_path);
+        }
+    }
+
+    // Hook llama logs to capture precise load errors
+    g_last_error.clear();
+    g_llama_log_tail.clear();
+    g_capture_llama_errors = true;
+    llama_log_set(ggml_log_to_last_error, nullptr);
     g_model = llama_load_model_from_file(model_path, mparams);
     if (!g_model) {
         LOGE("Failed to load model at %s", model_path);
+        if (!g_last_error.empty()) {
+            LOGE("llama last error: %s", g_last_error.c_str());
+        }
+        if (!g_llama_log_tail.empty()) {
+            std::string joined;
+            for (const auto &s : g_llama_log_tail) {
+                if (!joined.empty()) joined += " | ";
+                joined += s;
+            }
+            // keep it short
+            if (joined.size() > 1024) joined.resize(1024);
+            g_last_error = g_last_error.empty() ? joined : (g_last_error + " | " + joined);
+        }
+        if (g_last_error.empty()) g_last_error = "load failed";
+        // Stop capturing logs
+        g_capture_llama_errors = false;
+        llama_log_set(nullptr, nullptr);
         env->ReleaseStringUTFChars(jModelPath, model_path);
         release_locked();
         return JNI_FALSE;
     }
+    // Stop capturing logs now that model is ready
+    g_capture_llama_errors = false;
+    llama_log_set(nullptr, nullptr);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = kDefaultContext;
@@ -337,6 +512,7 @@ Java_com_samsung_llmtest_QwenBridge_nativeInit(
     g_ctx = llama_new_context_with_model(g_model, cparams);
     if (!g_ctx) {
         LOGE("Failed to create context for %s", model_path);
+        g_last_error = "context init failed";
         env->ReleaseStringUTFChars(jModelPath, model_path);
         release_locked();
         return JNI_FALSE;
@@ -351,26 +527,37 @@ Java_com_samsung_llmtest_QwenBridge_nativeInit(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_samsung_llmtest_QwenBridge_nativeLastError(
+        JNIEnv *env, jobject /*thiz*/) {
+    if (g_last_error.empty()) {
+        return env->NewStringUTF("");
+    }
+    return env->NewStringUTF(g_last_error.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_samsung_llmtest_QwenBridge_nativeGenerate(
-        JNIEnv *env, jobject /*thiz*/, jstring jPrompt, jint jMaxTokens) {
-    if (!jPrompt) {
-        return env->NewStringUTF("[error] Prompt is null.");
-    }
-
-    const char *prompt_chars = env->GetStringUTFChars(jPrompt, nullptr);
-    if (!prompt_chars) {
-        return env->NewStringUTF("[error] Unable to read prompt.");
-    }
-
-    std::string prompt(prompt_chars);
-    env->ReleaseStringUTFChars(jPrompt, prompt_chars);
+        JNIEnv *env,
+        jobject /*thiz*/,
+        jstring jFallbackPrompt,
+        jobjectArray jRoles,
+        jobjectArray jContents,
+        jint jMaxTokens) {
+    const std::string fallback = jstring_to_utf8(env, jFallbackPrompt);
+    const std::vector<std::string> roles = jstring_array_to_vector(env, jRoles);
+    const std::vector<std::string> contents = jstring_array_to_vector(env, jContents);
 
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_model || !g_ctx) {
         return env->NewStringUTF("[error] Model is not initialized.");
     }
-    std::string templated_prompt = apply_chat_template(prompt);
-    std::vector<llama_token> tokens = tokenize_prompt(g_model, templated_prompt);
+
+    std::string prompt;
+    if (!build_prompt_from_components(fallback, roles, contents, prompt)) {
+        return env->NewStringUTF("[error] Unable to build prompt.");
+    }
+
+    std::vector<llama_token> tokens = tokenize_prompt(g_model, prompt);
 
     if (tokens.empty()) {
         return env->NewStringUTF("[error] Failed to tokenize prompt.");
@@ -393,20 +580,14 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_samsung_llmtest_QwenBridge_nativeGenerateStreaming(
         JNIEnv *env,
         jobject /*thiz*/,
-        jstring jPrompt,
+        jstring jFallbackPrompt,
+        jobjectArray jRoles,
+        jobjectArray jContents,
         jint jMaxTokens,
         jobject jCallback) {
-    if (!jPrompt) {
-        return env->NewStringUTF("[error] Prompt is null.");
-    }
-
-    const char *prompt_chars = env->GetStringUTFChars(jPrompt, nullptr);
-    if (!prompt_chars) {
-        return env->NewStringUTF("[error] Unable to read prompt.");
-    }
-
-    std::string prompt(prompt_chars);
-    env->ReleaseStringUTFChars(jPrompt, prompt_chars);
+    const std::string fallback = jstring_to_utf8(env, jFallbackPrompt);
+    const std::vector<std::string> roles = jstring_array_to_vector(env, jRoles);
+    const std::vector<std::string> contents = jstring_array_to_vector(env, jContents);
 
     jmethodID on_token_method = nullptr;
     if (jCallback) {
@@ -426,8 +607,12 @@ Java_com_samsung_llmtest_QwenBridge_nativeGenerateStreaming(
         return env->NewStringUTF("[error] Model is not initialized.");
     }
 
-    std::string templated_prompt = apply_chat_template(prompt);
-    std::vector<llama_token> tokens = tokenize_prompt(g_model, templated_prompt);
+    std::string prompt;
+    if (!build_prompt_from_components(fallback, roles, contents, prompt)) {
+        return env->NewStringUTF("[error] Unable to build prompt.");
+    }
+
+    std::vector<llama_token> tokens = tokenize_prompt(g_model, prompt);
     if (tokens.empty()) {
         return env->NewStringUTF("[error] Failed to tokenize prompt.");
     }

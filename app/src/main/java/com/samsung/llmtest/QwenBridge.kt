@@ -47,9 +47,8 @@ object QwenBridge {
             }
         }
 
-        return result.getOrElse { error ->
-            if (required) throw error else false
-        }
+        // Never throw during class init; we surface errors via logs and return false
+        return result.getOrElse { false }
     }
 
     fun load(modelPath: String, threads: Int): Boolean {
@@ -57,16 +56,36 @@ object QwenBridge {
         return nativeInit(modelPath, threads)
     }
 
-    fun generate(prompt: String, maxTokens: Int): String = nativeGenerate(prompt, maxTokens)
+    fun generate(
+        bundle: QwenPromptFormatter.PromptBundle,
+        maxTokens: Int
+    ): String {
+        val roles = bundle.messages.takeIf { it.isNotEmpty() }?.map { it.role }?.toTypedArray()
+        val contents = bundle.messages.takeIf { it.isNotEmpty() }?.map { it.content }?.toTypedArray()
+        return nativeGenerate(
+            bundle.fallbackPrompt,
+            roles,
+            contents,
+            maxTokens
+        )
+    }
 
     fun generateStreaming(
-        prompt: String,
+        bundle: QwenPromptFormatter.PromptBundle,
         maxTokens: Int,
         onToken: (String) -> Unit
     ): String {
-        return nativeGenerateStreaming(prompt, maxTokens, TokenConsumer { chunk ->
+        val roles = bundle.messages.takeIf { it.isNotEmpty() }?.map { it.role }?.toTypedArray()
+        val contents = bundle.messages.takeIf { it.isNotEmpty() }?.map { it.content }?.toTypedArray()
+        return nativeGenerateStreaming(
+            bundle.fallbackPrompt,
+            roles,
+            contents,
+            maxTokens,
+            TokenConsumer { chunk ->
             onToken(chunk)
-        })
+        }
+        )
     }
     fun release() = nativeRelease()
 
@@ -74,16 +93,25 @@ object QwenBridge {
     fun loadedLibraries(): List<String> = loadedLibs.toList()
     fun lastTokenCount(): Int = nativeLastTokenCount()
     fun lastDecodeMs(): Double = nativeLastDecodeMs()
+    fun lastError(): String = nativeLastError()
 
     private external fun nativeInit(modelPath: String, nThreads: Int): Boolean
-    private external fun nativeGenerate(prompt: String, maxTokens: Int): String
+    private external fun nativeGenerate(
+        fallbackPrompt: String,
+        roles: Array<String>?,
+        contents: Array<String>?,
+        maxTokens: Int
+    ): String
     private external fun nativeGenerateStreaming(
-        prompt: String,
+        fallbackPrompt: String,
+        roles: Array<String>?,
+        contents: Array<String>?,
         maxTokens: Int,
         consumer: TokenConsumer
     ): String
     private external fun nativeRelease()
     private external fun nativeLastTokenCount(): Int
     private external fun nativeLastDecodeMs(): Double
+    private external fun nativeLastError(): String
 }
 

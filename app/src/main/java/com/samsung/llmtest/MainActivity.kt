@@ -64,6 +64,15 @@ class MainActivity : AppCompatActivity() {
         binding.generateButton.setOnClickListener { generateResponse() }
 
         updateStatus(getString(R.string.status_idle))
+
+        // TEMP: auto-load model on launch for debugging crashes on Load button
+        val autoPath = binding.modelPathInput.text?.toString()?.trim().orEmpty()
+        if (autoPath.isNotEmpty()) {
+            // Post to ensure views are initialized
+            binding.root.post {
+                loadModel()
+            }
+        }
     }
 
     private fun restoreLastModelPath() {
@@ -113,7 +122,11 @@ class MainActivity : AppCompatActivity() {
             if (preparedPath == null) {
                 binding.progressBar.isVisible = false
                 binding.loadModelButton.isEnabled = true
-                updateStatus(getString(R.string.status_model_failed))
+                val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    "Use Browse to pick the file so the app can access it."
+                } else ""
+                updateStatus(getString(R.string.status_model_failed) +
+                        (if (hint.isNotEmpty()) "\n$hint" else ""))
                 return@launch
             }
 
@@ -134,7 +147,11 @@ class MainActivity : AppCompatActivity() {
                 updateStatus(getString(R.string.status_model_ready, threads))
             } else {
                 isModelReady = false
-                updateStatus(getString(R.string.status_model_failed))
+                val detail = QwenBridge.lastError().takeIf { it.isNotBlank() } ?: ""
+                val message = if (detail.isNotEmpty())
+                    getString(R.string.status_model_failed) + "\nReason: $detail"
+                else getString(R.string.status_model_failed)
+                updateStatus(message)
             }
         }
     }
@@ -160,7 +177,7 @@ class MainActivity : AppCompatActivity() {
         updateStatus(getString(R.string.status_generating))
 
         lifecycleScope.launch {
-            val prompt = QwenPromptFormatter.buildPrompt(systemPrompt, userPrompt)
+            val promptBundle = QwenPromptFormatter.buildPrompt(systemPrompt, userPrompt)
             val tokenStream = Channel<String>(Channel.UNLIMITED)
             val assistantBuilder = StringBuilder()
 
@@ -175,7 +192,7 @@ class MainActivity : AppCompatActivity() {
             val startTime = SystemClock.elapsedRealtime()
             val output = try {
                 withContext(Dispatchers.IO) {
-                    QwenBridge.generateStreaming(prompt, QwenPromptFormatter.MAX_TOKENS) { chunk ->
+                    QwenBridge.generateStreaming(promptBundle, QwenPromptFormatter.MAX_TOKENS) { chunk ->
                         tokenStream.trySend(chunk).isSuccess
                     }
                 }
