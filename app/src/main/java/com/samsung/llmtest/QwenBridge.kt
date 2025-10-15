@@ -7,7 +7,6 @@ import androidx.annotation.Keep
 object QwenBridge {
     private const val TAG = "QwenBridge"
     private val loadedLibs = mutableListOf<String>()
-    @Volatile private var vulkanActive = false
 
     @Keep
     fun interface TokenConsumer {
@@ -28,7 +27,6 @@ object QwenBridge {
         loadedLibs += "native-lib"
 
         Log.i(TAG, "Loaded native libs: ${loadedLibs.joinToString()}")
-        Log.i(TAG, "Vulkan active=$vulkanActive")
     }
 
     private fun tryLoad(lib: String, required: Boolean): Boolean {
@@ -47,12 +45,11 @@ object QwenBridge {
             }
         }
 
-        // Never throw during class init; we surface errors via logs and return false
         return result.getOrElse { false }
     }
 
     fun load(modelPath: String, threads: Int): Boolean {
-        Log.i(TAG, "nativeInit threads=$threads vulkan=$vulkanActive")
+        Log.i(TAG, "nativeInit threads=$threads")
         return nativeInit(modelPath, threads)
     }
 
@@ -89,7 +86,6 @@ object QwenBridge {
     }
     fun release() = nativeRelease()
 
-    fun isVulkanActive(): Boolean = vulkanActive
     fun loadedLibraries(): List<String> = loadedLibs.toList()
     fun lastTokenCount(): Int = nativeLastTokenCount()
     fun lastDecodeMs(): Double = nativeLastDecodeMs()

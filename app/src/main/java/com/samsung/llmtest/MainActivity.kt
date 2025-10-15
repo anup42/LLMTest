@@ -104,7 +104,7 @@ class MainActivity : AppCompatActivity() {
 
         Log.i(
             "MainActivity",
-            "Loading model threads=$threads vulkan=${QwenBridge.isVulkanActive()} libs=${QwenBridge.loadedLibraries().joinToString()}"
+            "Loading model threads=$threads libs=${QwenBridge.loadedLibraries().joinToString()}"
         )
 
         lifecycleScope.launch {
