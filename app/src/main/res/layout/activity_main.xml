@@ -83,23 +83,7 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
-            <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/systemPromptLayout"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="12dp">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/systemPromptInput"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="top|start"
-                    android:hint="@string/system_prompt_hint"
-                    android:inputType="textMultiLine"
-                    android:minLines="2"
-                    android:textCursorDrawable="@null"
-                    tools:text="You are a helpful AI assistant." />
-            </com.google.android.material.textfield.TextInputLayout>
+            
 
             <com.google.android.material.textfield.TextInputLayout
                 android:id="@+id/userPromptLayout"

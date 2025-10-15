@@ -55,7 +55,6 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         restoreLastModelPath()
-        binding.systemPromptInput.setText(QwenPromptFormatter.defaultSystemPrompt())
         binding.userPromptInput.setText(getString(R.string.sample_user_prompt))
 
         binding.generateButton.isEnabled = false
@@ -64,15 +63,6 @@ class MainActivity : AppCompatActivity() {
         binding.generateButton.setOnClickListener { generateResponse() }
 
         updateStatus(getString(R.string.status_idle))
-
-        // TEMP: auto-load model on launch for debugging crashes on Load button
-        val autoPath = binding.modelPathInput.text?.toString()?.trim().orEmpty()
-        if (autoPath.isNotEmpty()) {
-            // Post to ensure views are initialized
-            binding.root.post {
-                loadModel()
-            }
-        }
     }
 
     private fun restoreLastModelPath() {
@@ -162,7 +152,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val systemPrompt = binding.systemPromptInput.text?.toString().orEmpty()
         val userPrompt = binding.userPromptInput.text?.toString()?.trim().orEmpty()
         if (userPrompt.isEmpty()) {
             updateStatus(getString(R.string.status_prompt_required))
@@ -177,7 +166,7 @@ class MainActivity : AppCompatActivity() {
         updateStatus(getString(R.string.status_generating))
 
         lifecycleScope.launch {
-            val promptBundle = QwenPromptFormatter.buildPrompt(systemPrompt, userPrompt)
+            val promptBundle = QwenPromptFormatter.buildPrompt(userPrompt)
             val tokenStream = Channel<String>(Channel.UNLIMITED)
             val assistantBuilder = StringBuilder()
 

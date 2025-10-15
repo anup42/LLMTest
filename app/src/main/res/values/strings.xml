@@ -4,7 +4,6 @@
     <string name="model_path_hint">Model file path (GGUF)</string>
     <string name="load_model">Load Model</string>
     <string name="select_model_file">Browse model file</string>
-    <string name="system_prompt_hint">System prompt (optional)</string>
     <string name="user_prompt_hint">User prompt</string>
     <string name="generate_response">Generate Response</string>
     <string name="clear_prompt">Clear prompt</string>
@@ -20,6 +19,5 @@
     <string name="status_generation_complete">Generation complete.</string>
     <string name="inference_failed">Generation failed: %1$s</string>
     <string name="inference_metrics">Tokens: %1$d · %2$.2f ms decode · %3$.2f tok/s · %4$.2f ms/token</string>
-    <string name="default_system_prompt">You are a helpful AI assistant.</string>
     <string name="sample_user_prompt">Provide a concise overview of the Qwen2.5 0.5B Instruct model and its ideal use cases.</string>
 </resources>
